@@ -122,6 +122,9 @@ def run(weights='yolov5s.pt',  # model.pt path(s)
     if pt and device.type != 'cpu':
         model(torch.zeros(1, 3, *imgsz).to(device).type_as(next(model.parameters())))  # run once
     t0 = time.time()
+
+    # fire_detection_count = 0
+
     for path, img, im0s, vid_cap in dataset:
         fire_detected = False
 
@@ -214,8 +217,9 @@ def run(weights='yolov5s.pt',  # model.pt path(s)
             # Print time (inference + NMS)
             print(f'{s}Done. ({t2 - t1:.3f}s)')
 
-            if fire_detected:
-                cv2.imwrite(f'{save_stream_detections}/detected.jpg', im0)
+            if fire_detected:                
+                cv2.imwrite(f'{save_stream_detections}/fire-detection.jpg', im0)
+                # fire_detection_count = fire_detection_count + 1
 
             # Stream results
             if view_img:

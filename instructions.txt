@@ -1,3 +1,6 @@
 docker build -t nandukalidindi/live-stream-yolov5 .
 docker run --name live-stream-yolov5 --rm --net=fire-detection -it nandukalidindi/live-stream-yolov5 bash
 docker push nandukalidindi/live-stream-yolov5
+
+# Local run
+python3 detect.py --weights fire_and_smoke.pt --source 'rtmp://localhost/show/test' --save-stream-detections '/Users/nandukalidindi/Documents/nandukalidindi-github/live-stream-fire-detection/public/images/yolov5-detections/'
