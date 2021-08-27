@@ -1,0 +1,3 @@
+docker build -t nandukalidindi/live-stream-yolov5 .
+docker run --name live-stream-yolov5 --rm --net=fire-detection -it nandukalidindi/live-stream-yolov5 bash
+docker push nandukalidindi/live-stream-yolov5
