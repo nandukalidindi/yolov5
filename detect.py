@@ -126,7 +126,7 @@ def run(weights='yolov5s.pt',  # model.pt path(s)
     # fire_detection_count = 0
 
     for path, img, im0s, vid_cap in dataset:
-        fire_detected = False
+        fire_smoke_detected = False
 
         if onnx:
             img = img.astype('float32')
@@ -196,8 +196,8 @@ def run(weights='yolov5s.pt',  # model.pt path(s)
                     n = (det[:, -1] == c).sum()  # detections per class
                     s += f"{n} {names[int(c)]}{'s' * (n > 1)}, "  # add to string
 
-                    if names[int(c)] == 'fire':
-                        fire_detected = True
+                    if names[int(c)] == 'fire' or names[int(c)] == 'smoke':
+                        fire_smoke_detected = True
 
                 # Write results
                 for *xyxy, conf, cls in reversed(det):
@@ -217,7 +217,7 @@ def run(weights='yolov5s.pt',  # model.pt path(s)
             # Print time (inference + NMS)
             print(f'{s}Done. ({t2 - t1:.3f}s)')
 
-            if fire_detected:                
+            if fire_smoke_detected:                
                 cv2.imwrite(f'{save_stream_detections}/fire-detection.jpg', im0)
                 # fire_detection_count = fire_detection_count + 1
 
