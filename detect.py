@@ -8,6 +8,7 @@ Usage:
 
 import argparse
 import sys
+import shutil
 import time
 from pathlib import Path
 
@@ -26,6 +27,10 @@ from utils.general import check_img_size, check_requirements, check_imshow, colo
 from utils.plots import colors, plot_one_box
 from utils.torch_utils import select_device, load_classifier, time_sync
 
+# UNDETECTED_COUNT_THRESHOLD = 600
+# MAX_DETECTION_FRAME_COUNT = 1800
+UNDETECTED_COUNT_THRESHOLD = 60
+MAX_DETECTION_FRAME_COUNT = 180
 
 @torch.no_grad()
 def run(weights='yolov5s.pt',  # model.pt path(s)
@@ -52,7 +57,8 @@ def run(weights='yolov5s.pt',  # model.pt path(s)
         hide_labels=False,  # hide labels
         hide_conf=False,  # hide confidences
         half=False,  # use FP16 half-precision inference
-        save_stream_detections='stream/detect',
+        save_stream_detection_image='stream/detect',
+        save_stream_detection_video='stream/detect'
         ):
     save_img = not nosave and not source.endswith('.txt')  # save inference images
     webcam = source.isnumeric() or source.endswith('.txt') or source.lower().startswith(
@@ -123,11 +129,14 @@ def run(weights='yolov5s.pt',  # model.pt path(s)
         model(torch.zeros(1, 3, *imgsz).to(device).type_as(next(model.parameters())))  # run once
     t0 = time.time()
 
-    # fire_detection_count = 0
+    # Video Snippets
+    build_video = False
+    fire_smoke_detected = False
+    current_video_frame_count = 0
+    undetected_count = 0
+
 
     for path, img, im0s, vid_cap in dataset:
-        fire_smoke_detected = False
-
         if onnx:
             img = img.astype('float32')
         else:
@@ -198,6 +207,8 @@ def run(weights='yolov5s.pt',  # model.pt path(s)
 
                     if names[int(c)] == 'fire' or names[int(c)] == 'smoke':
                         fire_smoke_detected = True
+                        build_video = True
+                        undetected_count = 0                    
 
                 # Write results
                 for *xyxy, conf, cls in reversed(det):
@@ -214,24 +225,24 @@ def run(weights='yolov5s.pt',  # model.pt path(s)
                         if save_crop:
                             save_one_box(xyxy, imc, file=save_dir / 'crops' / names[c] / f'{p.stem}.jpg', BGR=True)
 
+            else:
+                fire_smoke_detected = False
+                undetected_count = undetected_count + 1
+
             # Print time (inference + NMS)
             print(f'{s}Done. ({t2 - t1:.3f}s)')
 
-            if fire_smoke_detected:                
-                cv2.imwrite(f'{save_stream_detections}/fire-detection.jpg', im0)
-                # fire_detection_count = fire_detection_count + 1
+            if fire_smoke_detected:
+                cv2.imwrite(f'{save_stream_detection_image}/fire-detection.jpg', im0)
 
-            # Stream results
-            if view_img:
-                pass
-                # cv2.imshow(str(p), im0)
-                # cv2.waitKey(1)  # 1 millisecond
+            if build_video and undetected_count >= UNDETECTED_COUNT_THRESHOLD:
+                current_video_frame_count = 0
+                build_video = False
+                vid_writer[i].release()
 
-            # Save results (image with detections)
-            if save_img:
-                if dataset.mode == 'image':
-                    cv2.imwrite(save_path, im0)
-                else:  # 'video' or 'stream'
+            if build_video:
+                current_video_frame_count = current_video_frame_count + 1
+                if save_img:
                     if vid_path[i] != save_path:  # new video
                         vid_path[i] = save_path
                         if isinstance(vid_writer[i], cv2.VideoWriter):
@@ -242,9 +253,40 @@ def run(weights='yolov5s.pt',  # model.pt path(s)
                             h = int(vid_cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
                         else:  # stream
                             fps, w, h = 30, im0.shape[1], im0.shape[0]
-                            # save_path += '.mp4'
-                        # vid_writer[i] = cv2.VideoWriter(save_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (w, h))
-                    # vid_writer[i].write(im0)
+                            save_path += '.mp4'
+                        vid_writer[i] = cv2.VideoWriter(save_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (w, h))
+                    vid_writer[i].write(im0)
+
+                if current_video_frame_count >= MAX_DETECTION_FRAME_COUNT:
+                    current_video_frame_count = 0
+                    vid_path[i] = None
+                    vid_writer[i].release()         
+                    shutil.copy(save_path + '.mp4', save_stream_detection_video)
+                    print("===============================")
+                    print("===============================")
+                    print("SENDING VIDEO!!!")
+                    print("===============================")
+                    print("===============================")                    
+
+            
+            # Save results (image with detections)
+            # if save_img:
+            #     if dataset.mode == 'image':
+            #         cv2.imwrite(save_path, im0)
+            #     else:  # 'video' or 'stream'
+            #         if vid_path[i] != save_path:  # new video
+            #             vid_path[i] = save_path
+            #             if isinstance(vid_writer[i], cv2.VideoWriter):
+            #                 vid_writer[i].release()  # release previous video writer
+            #             if vid_cap:  # video
+            #                 fps = vid_cap.get(cv2.CAP_PROP_FPS)
+            #                 w = int(vid_cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            #                 h = int(vid_cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            #             else:  # stream
+            #                 fps, w, h = 30, im0.shape[1], im0.shape[0]
+            #                 save_path += '.mp4'
+            #             vid_writer[i] = cv2.VideoWriter(save_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (w, h))
+            #         vid_writer[i].write(im0)
 
     if save_txt or save_img:
         s = f"\n{len(list(save_dir.glob('labels/*.txt')))} labels saved to {save_dir / 'labels'}" if save_txt else ''
@@ -282,7 +324,8 @@ def parse_opt():
     parser.add_argument('--hide-labels', default=False, action='store_true', help='hide labels')
     parser.add_argument('--hide-conf', default=False, action='store_true', help='hide confidences')
     parser.add_argument('--half', action='store_true', help='use FP16 half-precision inference')
-    parser.add_argument('--save-stream-detections', default='stream/detect', help='Directory to save the stream snapshot for each frame')
+    parser.add_argument('--save-stream-detection-image', default='stream/detect', help='Directory to save the stream snapshot for each frame')
+    parser.add_argument('--save-stream-detection-video', default='stream/detect', help='Directory to save the video containing the detections across the specified time')
     opt = parser.parse_args()
     opt.imgsz *= 2 if len(opt.imgsz) == 1 else 1  # expand
     return opt
