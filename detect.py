@@ -48,7 +48,6 @@ def run(weights='yolov5s.pt',  # model.pt path(s)
         classes=None,  # filter by class: --class 0, or --class 0 2 3
         agnostic_nms=False,  # class-agnostic NMS
         augment=False,  # augmented inference
-        visualize=False,  # visualize features
         update=False,  # update all models
         project='runs/detect',  # save results to project/name
         name='exp',  # save results to project/name
@@ -149,8 +148,7 @@ def run(weights='yolov5s.pt',  # model.pt path(s)
         # Inference
         t1 = time_sync()
         if pt:
-            visualize = increment_path(save_dir / Path(path).stem, mkdir=True) if visualize else False
-            pred = model(img, augment=augment, visualize=visualize)[0]
+            pred = model(img, augment=augment)[0]
         elif onnx:
             pred = torch.tensor(session.run([session.get_outputs()[0].name], {session.get_inputs()[0].name: img}))
         else:  # tensorflow model (tflite, pb, saved_model)
@@ -208,7 +206,7 @@ def run(weights='yolov5s.pt',  # model.pt path(s)
                     if names[int(c)] == 'fire' or names[int(c)] == 'smoke':
                         fire_smoke_detected = True
                         build_video = True
-                        undetected_count = 0                    
+                        undetected_count = 0
 
                 # Write results
                 for *xyxy, conf, cls in reversed(det):
@@ -260,15 +258,15 @@ def run(weights='yolov5s.pt',  # model.pt path(s)
                 if current_video_frame_count >= MAX_DETECTION_FRAME_COUNT:
                     current_video_frame_count = 0
                     vid_path[i] = None
-                    vid_writer[i].release()         
+                    vid_writer[i].release()
                     shutil.copy(save_path + '.mp4', save_stream_detection_video)
                     print("===============================")
                     print("===============================")
                     print("SENDING VIDEO!!!")
                     print("===============================")
-                    print("===============================")                    
+                    print("===============================")
 
-            
+
             # Save results (image with detections)
             # if save_img:
             #     if dataset.mode == 'image':
@@ -315,7 +313,6 @@ def parse_opt():
     parser.add_argument('--classes', nargs='+', type=int, help='filter by class: --class 0, or --class 0 2 3')
     parser.add_argument('--agnostic-nms', action='store_true', help='class-agnostic NMS')
     parser.add_argument('--augment', action='store_true', help='augmented inference')
-    parser.add_argument('--visualize', action='store_true', help='visualize features')
     parser.add_argument('--update', action='store_true', help='update all models')
     parser.add_argument('--project', default='runs/detect', help='save results to project/name')
     parser.add_argument('--name', default='exp', help='save results to project/name')
