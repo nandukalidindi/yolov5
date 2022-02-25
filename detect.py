@@ -6,6 +6,7 @@ Usage:
     $ python path/to/detect.py --source path/to/img.jpg --weights yolov5s.pt --img 640
 """
 
+import os
 import argparse
 import sys
 import shutil
@@ -33,14 +34,95 @@ from utils.general import check_img_size, check_requirements, check_imshow, colo
 from utils.plots import colors, plot_one_box
 from utils.torch_utils import select_device, load_classifier, time_sync
 
-# UNDETECTED_COUNT_THRESHOLD = 600
-# MAX_DETECTION_FRAME_COUNT = 1800
-UNDETECTED_COUNT_THRESHOLD = 60
-MAX_DETECTION_FRAME_COUNT = 180
+UNDETECTED_COUNT_THRESHOLD = 600
+MAX_DETECTION_FRAME_COUNT = 1800
+# UNDETECTED_COUNT_THRESHOLD = 60
+# MAX_DETECTION_FRAME_COUNT = 180
+
+
+def load_sy4(weights, device, half):
+    model = attempt_load(weights, map_location=device)  # load FP32 model
+    stride = int(model.stride.max())  # model stride
+    names = model.module.names if hasattr(model, 'module') else model.names  # get class names
+    if half:
+        model.half()  # to FP16
+    return model
+
+
+def load_effdet(weights, imgsz, device):
+    with set_layer_config(scriptable=False):
+        model = create_model(
+            'tf_efficientdet_d2',
+            bench_task='predict',
+            num_classes=2,
+            pretrained=True,
+            checkpoint_path=weights,
+            image_size=imgsz,
+        ).to(device)
+    return model
+
+
+def separate_predictions(pred):
+    pred = pred[0]
+    pred_fire, pred_fire_prob = [], 0
+    pred_smoke, pred_smoke_prob = [], 0
+    for p in pred:
+        if p[-1] == 0:
+            pred_fire.append(p.unsqueeze(0))
+        else:
+            pred_smoke.append(p.unsqueeze(0))
+
+    if len(pred_fire) > 0:
+        pred_fire = torch.cat(pred_fire)
+        pred_fire_prob = torch.sum(pred_fire).item() / len(pred_fire)
+
+    if len(pred_smoke) > 0:
+        pred_smoke = torch.cat(pred_smoke)
+        pred_smoke_prob = torch.sum(pred_smoke).item() / len(pred_smoke)
+
+    return pred_fire, pred_fire_prob, pred_smoke, pred_smoke_prob
+
+
+def get_predictions(
+    img, model_sy4, model_effdet, conf_thres, iou_thres, classes,
+    agnostic_nms, max_det, augment, imgsz, resize_transform
+):
+    # Inference - Scaled Yolo v4
+    pred_sy4 = model_sy4(img, augment=augment)[0]
+    pred_sy4 = non_max_suppression(pred_sy4, conf_thres, iou_thres, classes, agnostic_nms, max_det=max_det)
+
+    # Inference - Efficientdet D2
+    if list(img.shape[-2:]) != imgsz:
+        img = resize_transform(img)
+    pred_effdet = model_effdet(img)[0].cpu()
+    pred_effdet[:, 5] = pred_effdet[:, 5] - 1
+    pred_effdet = [non_max_suppression_fast(pred_effdet, iou_thres, conf_thres)]
+
+    # Separate fire and smoke predictions
+    pred_sy4_fire, pred_sy4_fire_prob, pred_sy4_smoke, pred_sy4_smoke_prob = separate_predictions(pred_sy4)
+    pred_effdet_fire, pred_effdet_fire_prob, pred_effdet_smoke, pred_effdet_smoke_prob = separate_predictions(pred_effdet)
+
+    # Get the final predictions
+    pred_fire = pred_sy4_fire if pred_sy4_fire_prob > pred_effdet_fire_prob else pred_effdet_fire
+    pred_smoke = pred_sy4_smoke if pred_sy4_smoke_prob > pred_effdet_smoke_prob else pred_effdet_smoke
+    pred = []
+    if len(pred_fire) > 0:
+        pred.append(pred_fire.cpu())
+    if len(pred_smoke) > 0:
+        pred.append(pred_smoke.cpu())
+
+    if len(pred) > 0:
+        pred = torch.cat(pred)
+
+    # FIXME: scale the algo to batch size
+
+    # pred will be [tensor(shape=(n, 6), info=(n is num bboxes, 6 is - coords (4), prob, class_idx))]
+    return [pred]
+
 
 @torch.no_grad()
-def run(weights='yolov5s.pt',  # model.pt path(s)
-        detector='scaled_yolov4',  # model name
+def run(weight_sy4='scaled_yolov4.pt',  # model.pt path(s)
+        weight_effdet='efficientdet_d2.pth.tar',
         source='data/images',  # file/dir/URL/glob, 0 for webcam
         imgsz=640,  # inference size (pixels)
         conf_thres=0.25,  # confidence threshold
@@ -55,7 +137,6 @@ def run(weights='yolov5s.pt',  # model.pt path(s)
         classes=None,  # filter by class: --class 0, or --class 0 2 3
         agnostic_nms=False,  # class-agnostic NMS
         augment=False,  # augmented inference
-        update=False,  # update all models
         project='runs/detect',  # save results to project/name
         name='exp',  # save results to project/name
         exist_ok=False,  # existing project/name ok, do not increment
@@ -64,7 +145,8 @@ def run(weights='yolov5s.pt',  # model.pt path(s)
         hide_conf=False,  # hide confidences
         half=False,  # use FP16 half-precision inference
         save_stream_detection_image='stream/detect',
-        save_stream_detection_video='stream/detect'
+        save_stream_detection_video='stream/detect',
+        verbose=False,
         ):
     save_img = not nosave and not source.endswith('.txt')  # save inference images
     webcam = source.isnumeric() or source.endswith('.txt') or source.lower().startswith(
@@ -80,25 +162,10 @@ def run(weights='yolov5s.pt',  # model.pt path(s)
     half &= device.type != 'cpu'  # half precision only supported on CUDA
 
     # Load model
-    w = weights[0] if isinstance(weights, list) else weights
     stride, names = 64, ['fire', 'smoke']  # assign defaults
 
-    if detector == 'scaled_yolov4':
-        model = attempt_load(weights, map_location=device)  # load FP32 model
-        stride = int(model.stride.max())  # model stride
-        names = model.module.names if hasattr(model, 'module') else model.names  # get class names
-        if half:
-            model.half()  # to FP16
-    elif detector == 'efficientdet':
-        with set_layer_config(scriptable=False):
-            model = create_model(
-                'tf_efficientdet_d2',
-                bench_task='predict',
-                num_classes=2,
-                pretrained=True,
-                checkpoint_path=weights[0],
-                image_size=imgsz,
-            ).to(device)
+    model_sy4 = load_sy4(weight_sy4, device, half)
+    model_effdet = load_effdet(weight_effdet, imgsz, device)
 
     imgsz = check_img_size(imgsz, s=stride)  # check image size
     resize_transform = transforms.Compose([transforms.Resize(imgsz)])  # for resizing images
@@ -110,13 +177,14 @@ def run(weights='yolov5s.pt',  # model.pt path(s)
         dataset = LoadStreams(source, img_size=imgsz, stride=stride)
         bs = len(dataset)  # batch_size
     else:
-        dataset = LoadImages(source, img_size=imgsz, stride=stride)
+        dataset = LoadImages(source, img_size=imgsz, stride=stride, verbose=verbose)
         bs = 1  # batch_size
     vid_path, vid_writer = [None] * bs, [None] * bs
 
     # Run inference
     if device.type != 'cpu':
-        model(torch.zeros(1, 3, *imgsz).to(device).type_as(next(model.parameters())))  # run once
+        model_sy4(torch.zeros(1, 3, *imgsz).to(device).type_as(next(model_sy4.parameters())))  # run once
+        model_effdet(torch.zeros(1, 3, *imgsz).to(device).type_as(next(model_effdet.parameters())))  # run once
     t0 = time.time()
 
     # Video Snippets
@@ -132,22 +200,10 @@ def run(weights='yolov5s.pt',  # model.pt path(s)
         if len(img.shape) == 3:
             img = img[None]  # expand for batch dim
 
-        # Inference
-        t1 = time_sync()
-        if detector == 'scaled_yolov4':
-            pred = model(img, augment=augment)[0]
-        elif detector == 'efficientdet':
-            if list(img.shape[-2:]) != imgsz:
-                img = resize_transform(img)
-            pred = model(img)[0].cpu()
-            pred[:, 5] = pred[:, 5] - 1
-
-        # NMS  # FIXME: Change for efficientdet - format should be xyxy, class, score
-        if detector == 'scaled_yolov4':
-            pred = non_max_suppression(pred, conf_thres, iou_thres, classes, agnostic_nms, max_det=max_det)
-        elif detector == 'efficientdet':
-            pred = [non_max_suppression_fast(pred, iou_thres, conf_thres)]
-        t2 = time_sync()
+        pred = get_predictions(
+            img, model_sy4, model_effdet, conf_thres, iou_thres, classes,
+            agnostic_nms, max_det, augment, imgsz, resize_transform
+        )
 
         # Process predictions
         for i, det in enumerate(pred):  # detections per image
@@ -196,7 +252,8 @@ def run(weights='yolov5s.pt',  # model.pt path(s)
                 undetected_count = undetected_count + 1
 
             # Print time (inference + NMS)
-            print(f'{s}Done. ({t2 - t1:.3f}s)')
+            if verbose:
+                print(f'{s}Done.')
 
             if fire_smoke_detected:
                 cv2.imwrite(f'{save_stream_detection_image}/fire-detection.jpg', im0)
@@ -227,7 +284,7 @@ def run(weights='yolov5s.pt',  # model.pt path(s)
                     current_video_frame_count = 0
                     vid_path[i] = None
                     vid_writer[i].release()
-                    shutil.copy(save_path + '.mp4', save_stream_detection_video)
+                    shutil.copy(save_path, save_stream_detection_video)
                     print("===============================")
                     print("===============================")
                     print("SENDING VIDEO!!!")
@@ -258,19 +315,17 @@ def run(weights='yolov5s.pt',  # model.pt path(s)
         s = f"\n{len(list(save_dir.glob('labels/*.txt')))} labels saved to {save_dir / 'labels'}" if save_txt else ''
         print(f"Results saved to {colorstr('bold', save_dir)}{s}")
 
-    if update:
-        strip_optimizer(weights)  # update model (to fix SourceChangeWarning)
-
     print(f'Done. ({time.time() - t0:.3f}s)')
 
 
 def parse_opt():
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
     parser = argparse.ArgumentParser()
-    parser.add_argument('--weights', nargs='+', type=str, default='yolov5s.pt', help='model.pt path(s)')
-    parser.add_argument('--detector', type=str, required=True, choices=['efficientdet', 'scaled_yolov4'], help='Model name')
-    parser.add_argument('--source', type=str, default='data/images', help='file/dir/URL/glob, 0 for webcam')
+    parser.add_argument('--weight_sy4', type=str, default=os.path.join(BASE_DIR, 'weights/scaled_yolov4.pt'), help='scaled yolov4 path')
+    parser.add_argument('--weight_effdet', type=str, default=os.path.join(BASE_DIR, 'weights/efficientdet_d2.pth.tar'), help='efficientdet d2 path')
+    parser.add_argument('--source', type=str, default=os.path.join(BASE_DIR, 'data/video.mp4'), help='file/dir/URL/glob, 0 for webcam')
     parser.add_argument('--imgsz', '--img', '--img-size', nargs='+', type=int, default=[640], help='inference size h,w')
-    parser.add_argument('--conf-thres', type=float, default=0.25, help='confidence threshold')
+    parser.add_argument('--conf-thres', type=float, default=0.45, help='confidence threshold')
     parser.add_argument('--iou-thres', type=float, default=0.45, help='NMS IoU threshold')
     parser.add_argument('--max-det', type=int, default=1000, help='maximum detections per image')
     parser.add_argument('--device', default='', help='cuda device, i.e. 0 or 0,1,2,3 or cpu')
@@ -282,7 +337,6 @@ def parse_opt():
     parser.add_argument('--classes', nargs='+', type=int, help='filter by class: --class 0, or --class 0 2 3')
     parser.add_argument('--agnostic-nms', action='store_true', help='class-agnostic NMS')
     parser.add_argument('--augment', action='store_true', help='augmented inference')
-    parser.add_argument('--update', action='store_true', help='update all models')
     parser.add_argument('--project', default='runs/detect', help='save results to project/name')
     parser.add_argument('--name', default='exp', help='save results to project/name')
     parser.add_argument('--exist-ok', action='store_true', help='existing project/name ok, do not increment')
@@ -292,6 +346,7 @@ def parse_opt():
     parser.add_argument('--half', action='store_true', help='use FP16 half-precision inference')
     parser.add_argument('--save-stream-detection-image', default='stream/detect', help='Directory to save the stream snapshot for each frame')
     parser.add_argument('--save-stream-detection-video', default='stream/detect', help='Directory to save the video containing the detections across the specified time')
+    parser.add_argument('--verbose', action='store_true', help='display intermediate logs')
     opt = parser.parse_args()
     opt.imgsz *= 2 if len(opt.imgsz) == 1 else 1  # expand
     return opt
