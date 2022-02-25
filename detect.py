@@ -34,10 +34,10 @@ from utils.general import check_img_size, check_requirements, check_imshow, colo
 from utils.plots import colors, plot_one_box
 from utils.torch_utils import select_device, load_classifier, time_sync
 
-UNDETECTED_COUNT_THRESHOLD = 600
-MAX_DETECTION_FRAME_COUNT = 1800
-# UNDETECTED_COUNT_THRESHOLD = 60
-# MAX_DETECTION_FRAME_COUNT = 180
+# UNDETECTED_COUNT_THRESHOLD = 600
+# MAX_DETECTION_FRAME_COUNT = 1800
+UNDETECTED_COUNT_THRESHOLD = 60
+MAX_DETECTION_FRAME_COUNT = 180
 
 
 def load_sy4(weights, device, half):
@@ -280,7 +280,8 @@ def run(weight_sy4='scaled_yolov4.pt',  # model.pt path(s)
                         vid_writer[i] = cv2.VideoWriter(save_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (w, h))
                     vid_writer[i].write(im0)
 
-                if current_video_frame_count >= MAX_DETECTION_FRAME_COUNT:
+                # FIXME: save_stream_detection_video path check can be removed during deployment
+                if os.path.exists(save_stream_detection_video) and current_video_frame_count >= MAX_DETECTION_FRAME_COUNT:
                     current_video_frame_count = 0
                     vid_path[i] = None
                     vid_writer[i].release()
