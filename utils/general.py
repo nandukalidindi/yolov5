@@ -614,55 +614,57 @@ def non_max_suppression(prediction, conf_thres=0.25, iou_thres=0.45, classes=Non
     return output
 
 
-# FIXME
 def non_max_suppression_fast(predictions, iou_thres, conf_thres):
-    predictions = predictions.clone().numpy()
-    predictions = predictions[predictions[:, 4] > conf_thres]
-    boxes, class_idxs, scores = predictions[:, :4], predictions[:, 5], predictions[:, 4]
+    outputs = [torch.zeros((0, 6), device='cpu')] * predictions.shape[0]
+    predictions = predictions.detach().cpu().numpy()
+    for pidx, prediction in enumerate(predictions):
+        prediction = prediction[prediction[:, 4] > conf_thres]
+        boxes, class_idxs, scores = prediction[:, :4], prediction[:, 5], prediction[:, 4]
 
-    # if there are no boxes, return an empty list
-    if len(boxes) == 0:
-        return []
+        # if there are no boxes, return an empty list
+        if len(boxes) == 0:
+            continue
 
-    # if the bounding boxes are integers, convert them to floats
-    if boxes.dtype.kind == 'i':
-        boxes = boxes.astype('float')
+        # if the bounding boxes are integers, convert them to floats
+        if boxes.dtype.kind == 'i':
+            boxes = boxes.astype('float')
 
-    pick = []
-    x1 = boxes[:,0]
-    y1 = boxes[:,1]
-    x2 = boxes[:,2]
-    y2 = boxes[:,3]
+        pick = []
+        x1 = boxes[:,0]
+        y1 = boxes[:,1]
+        x2 = boxes[:,2]
+        y2 = boxes[:,3]
 
-    # compute the area of the bounding boxes and sort the bounding
-    # boxes by the bottom-right y-coordinate of the bounding box
-    area = (x2 - x1 + 1) * (y2 - y1 + 1)
+        # compute the area of the bounding boxes and sort the bounding
+        # boxes by the bottom-right y-coordinate of the bounding box
+        area = (x2 - x1 + 1) * (y2 - y1 + 1)
 
-    idxs = np.argsort(y2)
-    while len(idxs) > 0:
-        # grab the last index in the indexes list and add the
-        # index value to the list of picked indexes
-        last = len(idxs) - 1
-        pick.append(idxs[last])
+        idxs = np.argsort(y2)
+        while len(idxs) > 0:
+            # grab the last index in the indexes list and add the
+            # index value to the list of picked indexes
+            last = len(idxs) - 1
+            pick.append(idxs[last])
 
-        xx1 = np.maximum(x1[idxs[last]], x1[idxs[:last]])
-        yy1 = np.maximum(y1[idxs[last]], y1[idxs[:last]])
-        xx2 = np.minimum(x2[idxs[last]], x2[idxs[:last]])
-        yy2 = np.minimum(y2[idxs[last]], y2[idxs[:last]])
+            xx1 = np.maximum(x1[idxs[last]], x1[idxs[:last]])
+            yy1 = np.maximum(y1[idxs[last]], y1[idxs[:last]])
+            xx2 = np.minimum(x2[idxs[last]], x2[idxs[:last]])
+            yy2 = np.minimum(y2[idxs[last]], y2[idxs[:last]])
 
-        w = np.maximum(0, xx2 - xx1 + 1)
-        h = np.maximum(0, yy2 - yy1 + 1)
+            w = np.maximum(0, xx2 - xx1 + 1)
+            h = np.maximum(0, yy2 - yy1 + 1)
 
-        overlap = (w * h) / area[idxs[:last]]
+            overlap = (w * h) / area[idxs[:last]]
 
-        idxs = np.delete(idxs, np.concatenate(([last], np.where(overlap > iou_thres)[0])))
+            idxs = np.delete(idxs, np.concatenate(([last], np.where(overlap > iou_thres)[0])))
 
-    return torch.cat(
-        (
+        outputs[pidx] =  torch.cat((
             torch.tensor(boxes[pick].astype('int')),
             torch.tensor(scores[pick]).unsqueeze(1),
             torch.tensor(class_idxs[pick]).unsqueeze(1),
-    ), dim=1)
+        ), dim=1).to('cpu')
+
+    return outputs
 
 
 def strip_optimizer(f='best.pt', s=''):  # from utils.general import *; strip_optimizer()

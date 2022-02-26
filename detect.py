@@ -34,10 +34,10 @@ from utils.general import check_img_size, check_requirements, check_imshow, colo
 from utils.plots import colors, plot_one_box
 from utils.torch_utils import select_device, load_classifier, time_sync
 
-# UNDETECTED_COUNT_THRESHOLD = 600
-# MAX_DETECTION_FRAME_COUNT = 1800
-UNDETECTED_COUNT_THRESHOLD = 60
-MAX_DETECTION_FRAME_COUNT = 180
+UNDETECTED_COUNT_THRESHOLD = 600000
+MAX_DETECTION_FRAME_COUNT = 1800000
+# UNDETECTED_COUNT_THRESHOLD = 60  # 600
+# MAX_DETECTION_FRAME_COUNT = 180  # 1800
 
 
 def load_sy4(weights, device, half):
@@ -62,25 +62,49 @@ def load_effdet(weights, imgsz, device):
     return model
 
 
-def separate_predictions(pred):
-    pred = pred[0]
-    pred_fire, pred_fire_prob = [], 0
-    pred_smoke, pred_smoke_prob = [], 0
-    for p in pred:
-        if p[-1] == 0:
-            pred_fire.append(p.unsqueeze(0))
+def classify_predictions(predictions):
+    pred_fire, pred_fire_prob, pred_smoke, pred_smoke_prob = [], [], [], []
+
+    for pred in predictions:
+        pred = pred.to('cpu')
+        fire, fire_prob = [], 0
+        smoke, smoke_prob = [], 0
+        for p in pred:
+            if p[-1] == 0:
+                fire.append(p.unsqueeze(0))
+            elif p[-1] == 1:
+                smoke.append(p.unsqueeze(0))
+
+        if len(fire) > 0:
+            fire = torch.cat(fire)
+            fire_prob = sum([x[-2] for x in fire]).item() / len(fire)
         else:
-            pred_smoke.append(p.unsqueeze(0))
+            fire = torch.empty((0, 6))
 
-    if len(pred_fire) > 0:
-        pred_fire = torch.cat(pred_fire)
-        pred_fire_prob = torch.sum(pred_fire).item() / len(pred_fire)
+        if len(smoke) > 0:
+            smoke = torch.cat(smoke)
+            smoke_prob = sum([x[-2] for x in smoke]) / len(smoke)
+        else:
+            smoke = torch.empty((0, 6))
 
-    if len(pred_smoke) > 0:
-        pred_smoke = torch.cat(pred_smoke)
-        pred_smoke_prob = torch.sum(pred_smoke).item() / len(pred_smoke)
+        pred_fire.append(fire)
+        pred_fire_prob.append(fire_prob)
+        pred_smoke.append(smoke)
+        pred_smoke_prob.append(smoke_prob)
 
     return pred_fire, pred_fire_prob, pred_smoke, pred_smoke_prob
+
+
+def obtain_best_predictions(pred_sy4, prob_sy4, pred_effdet, prob_effdet):
+    predictions = []
+    for batch_idx in range(len(pred_sy4)):
+        if prob_sy4[batch_idx] == 0 or prob_effdet[batch_idx] == 0:
+            predictions.append(torch.empty((0, 6)))
+            continue
+        predictions.append(
+            pred_sy4[batch_idx] if prob_sy4[batch_idx] > prob_effdet[batch_idx] else pred_effdet[batch_idx]
+        )
+    return predictions
 
 
 def get_predictions(
@@ -94,30 +118,21 @@ def get_predictions(
     # Inference - Efficientdet D2
     if list(img.shape[-2:]) != imgsz:
         img = resize_transform(img)
-    pred_effdet = model_effdet(img)[0].cpu()
-    pred_effdet[:, 5] = pred_effdet[:, 5] - 1
-    pred_effdet = [non_max_suppression_fast(pred_effdet, iou_thres, conf_thres)]
+    pred_effdet = model_effdet(img)
+    pred_effdet[:, :, 5] = pred_effdet[:, :, 5] - 1
+    pred_effdet = non_max_suppression_fast(pred_effdet, iou_thres, conf_thres)
 
     # Separate fire and smoke predictions
-    pred_sy4_fire, pred_sy4_fire_prob, pred_sy4_smoke, pred_sy4_smoke_prob = separate_predictions(pred_sy4)
-    pred_effdet_fire, pred_effdet_fire_prob, pred_effdet_smoke, pred_effdet_smoke_prob = separate_predictions(pred_effdet)
+    pred_sy4_fire, pred_sy4_fire_prob, pred_sy4_smoke, pred_sy4_smoke_prob = classify_predictions(pred_sy4)
+    pred_effdet_fire, pred_effdet_fire_prob, pred_effdet_smoke, pred_effdet_smoke_prob = classify_predictions(pred_effdet)
 
     # Get the final predictions
-    pred_fire = pred_sy4_fire if pred_sy4_fire_prob > pred_effdet_fire_prob else pred_effdet_fire
-    pred_smoke = pred_sy4_smoke if pred_sy4_smoke_prob > pred_effdet_smoke_prob else pred_effdet_smoke
-    pred = []
-    if len(pred_fire) > 0:
-        pred.append(pred_fire.cpu())
-    if len(pred_smoke) > 0:
-        pred.append(pred_smoke.cpu())
+    pred_fire = obtain_best_predictions(pred_sy4_fire, pred_sy4_fire_prob, pred_effdet_fire, pred_effdet_fire_prob)
+    pred_smoke = obtain_best_predictions(pred_sy4_smoke, pred_sy4_smoke_prob, pred_effdet_smoke, pred_effdet_smoke_prob)
 
-    if len(pred) > 0:
-        pred = torch.cat(pred)
-
-    # FIXME: scale the algo to batch size
-
-    # pred will be [tensor(shape=(n, 6), info=(n is num bboxes, 6 is - coords (4), prob, class_idx))]
-    return [pred]
+    # Convert the batch predictions into tensors
+    # pred will be [tensor(shape=(n, 6), info=(n is num bboxes, 6 is - coords (4), prob, class_idx)),]
+    return [torch.cat((pf, ps)) for pf, ps in zip(pred_fire, pred_smoke)]
 
 
 @torch.no_grad()
@@ -163,7 +178,6 @@ def run(weight_sy4='scaled_yolov4.pt',  # model.pt path(s)
 
     # Load model
     stride, names = 64, ['fire', 'smoke']  # assign defaults
-
     model_sy4 = load_sy4(weight_sy4, device, half)
     model_effdet = load_effdet(weight_effdet, imgsz, device)
 
@@ -174,7 +188,7 @@ def run(weight_sy4='scaled_yolov4.pt',  # model.pt path(s)
     if webcam:
         view_img = check_imshow()
         cudnn.benchmark = True  # set True to speed up constant image size inference
-        dataset = LoadStreams(source, img_size=imgsz, stride=stride)
+        dataset = LoadStreams(source, img_size=imgsz, stride=stride, verbose=verbose)
         bs = len(dataset)  # batch_size
     else:
         dataset = LoadImages(source, img_size=imgsz, stride=stride, verbose=verbose)
@@ -326,7 +340,7 @@ def parse_opt():
     parser.add_argument('--weight_effdet', type=str, default=os.path.join(BASE_DIR, 'weights/efficientdet_d2.pth.tar'), help='efficientdet d2 path')
     parser.add_argument('--source', type=str, default=os.path.join(BASE_DIR, 'data/video.mp4'), help='file/dir/URL/glob, 0 for webcam')
     parser.add_argument('--imgsz', '--img', '--img-size', nargs='+', type=int, default=[640], help='inference size h,w')
-    parser.add_argument('--conf-thres', type=float, default=0.45, help='confidence threshold')
+    parser.add_argument('--conf-thres', type=float, default=0.3, help='confidence threshold')
     parser.add_argument('--iou-thres', type=float, default=0.45, help='NMS IoU threshold')
     parser.add_argument('--max-det', type=int, default=1000, help='maximum detections per image')
     parser.add_argument('--device', default='', help='cuda device, i.e. 0 or 0,1,2,3 or cpu')
@@ -351,6 +365,8 @@ def parse_opt():
     opt = parser.parse_args()
     opt.imgsz *= 2 if len(opt.imgsz) == 1 else 1  # expand
     return opt
+
+    # FIXME: have separate threshold from fire and smoke
 
 
 def main(opt):
