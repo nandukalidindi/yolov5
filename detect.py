@@ -340,7 +340,7 @@ def parse_opt():
     parser.add_argument('--weight_effdet', type=str, default=os.path.join(BASE_DIR, 'weights/efficientdet_d2.pth.tar'), help='efficientdet d2 path')
     parser.add_argument('--source', type=str, default=os.path.join(BASE_DIR, 'data/video.mp4'), help='file/dir/URL/glob, 0 for webcam')
     parser.add_argument('--imgsz', '--img', '--img-size', nargs='+', type=int, default=[640], help='inference size h,w')
-    parser.add_argument('--conf-thres', type=float, default=0.3, help='confidence threshold')
+    parser.add_argument('--conf-thres', type=float, default=0.33, help='confidence threshold')
     parser.add_argument('--iou-thres', type=float, default=0.45, help='NMS IoU threshold')
     parser.add_argument('--max-det', type=int, default=1000, help='maximum detections per image')
     parser.add_argument('--device', default='', help='cuda device, i.e. 0 or 0,1,2,3 or cpu')
@@ -365,8 +365,6 @@ def parse_opt():
     opt = parser.parse_args()
     opt.imgsz *= 2 if len(opt.imgsz) == 1 else 1  # expand
     return opt
-
-    # FIXME: have separate threshold from fire and smoke
 
 
 def main(opt):
