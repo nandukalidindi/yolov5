@@ -101,9 +101,12 @@ def obtain_best_predictions(pred_sy4, prob_sy4, pred_effdet, prob_effdet):
         if prob_sy4[batch_idx] == 0 or prob_effdet[batch_idx] == 0:
             predictions.append(torch.empty((0, 6)))
             continue
-        predictions.append(
-            pred_sy4[batch_idx] if prob_sy4[batch_idx] > prob_effdet[batch_idx] else pred_effdet[batch_idx]
-        )
+        # If both models agree that there is fire or smoke in the frame
+        # then the output of scaled yolov4 is drawn on the frame
+        #
+        # Old logic: (consider the prediction with highest probability)
+        # predictions.append(pred_sy4[batch_idx] if prob_sy4[batch_idx] > prob_effdet[batch_idx] else pred_effdet[batch_idx])
+        predictions.append(pred_sy4[batch_idx])
     return predictions
 
 
