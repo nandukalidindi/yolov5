@@ -280,7 +280,7 @@ class LoadWebcam:  # for inference
 
 
 class LoadStreams:  # multiple IP or RTSP cameras
-    def __init__(self, sources='streams.txt', img_size=640, stride=32, auto=True):
+    def __init__(self, sources='streams.txt', img_size=640, stride=32, auto=True, verbose=False):
         self.mode = 'stream'
         self.img_size = img_size
         self.stride = stride
@@ -297,7 +297,8 @@ class LoadStreams:  # multiple IP or RTSP cameras
         self.auto = auto
         for i, s in enumerate(sources):  # index, source
             # Start thread to read frames from video stream
-            print(f'{i + 1}/{n}: {s}... ', end='')
+            if verbose:
+                print(f'{i + 1}/{n}: {s}... ', end='')
             if 'youtube.com/' in s or 'youtu.be/' in s:  # if source is YouTube video
                 check_requirements(('pafy', 'youtube_dl'))
                 import pafy
@@ -312,14 +313,16 @@ class LoadStreams:  # multiple IP or RTSP cameras
 
             _, self.imgs[i] = cap.read()  # guarantee first frame
             self.threads[i] = Thread(target=self.update, args=([i, cap]), daemon=True)
-            print(f" success ({self.frames[i]} frames {w}x{h} at {self.fps[i]:.2f} FPS)")
+            if verbose:
+                print(f" success ({self.frames[i]} frames {w}x{h} at {self.fps[i]:.2f} FPS)")
             self.threads[i].start()
-        print('')  # newline
+        if verbose:
+            print('')  # newline
 
         # check for common shapes
         s = np.stack([letterbox(x, self.img_size, stride=self.stride, auto=self.auto)[0].shape for x in self.imgs], 0)  # shapes
         self.rect = np.unique(s, axis=0).shape[0] == 1  # rect inference if all shapes equal
-        if not self.rect:
+        if not self.rect and verbose:
             print('WARNING: Different stream shapes detected. For optimal performance supply similarly-shaped streams.')
 
     def update(self, i, cap):
