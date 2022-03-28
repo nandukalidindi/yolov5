@@ -6,6 +6,7 @@ Usage:
     $ python path/to/detect.py --source path/to/img.jpg --weights yolov5s.pt --img 640
 """
 
+import os
 import argparse
 import sys
 import shutil
@@ -27,10 +28,12 @@ from utils.general import check_img_size, check_requirements, check_imshow, colo
 from utils.plots import colors, plot_one_box
 from utils.torch_utils import select_device, load_classifier, time_sync
 
-# UNDETECTED_COUNT_THRESHOLD = 600
-# MAX_DETECTION_FRAME_COUNT = 1800
-UNDETECTED_COUNT_THRESHOLD = 60
-MAX_DETECTION_FRAME_COUNT = 180
+
+UNDETECTED_COUNT_THRESHOLD = 3
+MAX_DETECTION_FRAME_COUNT = 4
+MAX_FIRE_BOX_AREA_INCREASE_COUNT = 3
+FIRE_BOX_AREA_UNDETECTED_THRESHOLD = 1
+
 
 @torch.no_grad()
 def run(weights='yolov5s.pt',  # model.pt path(s)
@@ -134,6 +137,10 @@ def run(weights='yolov5s.pt',  # model.pt path(s)
     fire_smoke_detected = False
     current_video_frame_count = 0
     undetected_count = 0
+    current_fire_box_area = 0
+    fire_box_area_increasing_count = 0
+    fire_box_area_increasing_undetect_count = 0
+    fire_ignition_detected = False
 
 
     for path, img, im0s, vid_cap in dataset:
@@ -208,7 +215,21 @@ def run(weights='yolov5s.pt',  # model.pt path(s)
                     if names[int(c)] == 'fire' or names[int(c)] == 'smoke':
                         fire_smoke_detected = True
                         build_video = True
-                        undetected_count = 0                    
+                        undetected_count = 0
+
+                # Calculate area of fire bounding boxes
+                if not fire_ignition_detected:
+                    fire_bbox_area_list = []
+                    for *xyxy, _, cls in det:
+                        if names[int(cls)] == 'fire':
+                            fire_bbox_area_list.append((xyxy[2] - xyxy[0]) * (xyxy[3] - xyxy[1]))
+                    fire_box_area = np.mean(fire_bbox_area_list)
+                    if fire_box_area >= current_fire_box_area:
+                        fire_box_area_increasing_count += 1
+                        current_fire_box_area = fire_box_area
+                        fire_box_area_increasing_undetect_count = 0
+                    else:
+                        fire_box_area_increasing_undetect_count += 1
 
                 # Write results
                 for *xyxy, conf, cls in reversed(det):
@@ -224,10 +245,11 @@ def run(weights='yolov5s.pt',  # model.pt path(s)
                         im0 = plot_one_box(xyxy, im0, label=label, color=colors(c, True), line_width=line_thickness)
                         if save_crop:
                             save_one_box(xyxy, imc, file=save_dir / 'crops' / names[c] / f'{p.stem}.jpg', BGR=True)
-
             else:
                 fire_smoke_detected = False
-                undetected_count = undetected_count + 1
+                undetected_count += 1
+                if not fire_ignition_detected:
+                    fire_box_area_increasing_undetect_count += 1
 
             # Print time (inference + NMS)
             print(f'{s}Done. ({t2 - t1:.3f}s)')
@@ -235,13 +257,29 @@ def run(weights='yolov5s.pt',  # model.pt path(s)
             if fire_smoke_detected:
                 cv2.imwrite(f'{save_stream_detection_image}/fire-detection.jpg', im0)
 
+            if fire_box_area_increasing_count >= MAX_FIRE_BOX_AREA_INCREASE_COUNT:
+                print('============================================================')
+                print('Fire ignition detected!')
+                print('============================================================')
+                fire_ignition_detected = True
+
+            if not fire_ignition_detected and fire_box_area_increasing_undetect_count >= FIRE_BOX_AREA_UNDETECTED_THRESHOLD:
+                fire_box_area_increasing_count = 0
+                current_fire_box_area = 0
+
             if build_video and undetected_count >= UNDETECTED_COUNT_THRESHOLD:
                 current_video_frame_count = 0
                 build_video = False
                 vid_writer[i].release()
 
+                # Reset fire ignition detection
+                fire_ignition_detected = False
+                fire_box_area_increasing_count = 0
+                current_fire_box_area = 0
+                fire_box_area_increasing_undetect_count = 0
+
             if build_video:
-                current_video_frame_count = current_video_frame_count + 1
+                current_video_frame_count += 1
                 if save_img:
                     if vid_path[i] != save_path:  # new video
                         vid_path[i] = save_path
@@ -257,36 +295,22 @@ def run(weights='yolov5s.pt',  # model.pt path(s)
                         vid_writer[i] = cv2.VideoWriter(save_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (w, h))
                     vid_writer[i].write(im0)
 
-                if current_video_frame_count >= MAX_DETECTION_FRAME_COUNT:
+                if current_video_frame_count >= MAX_DETECTION_FRAME_COUNT and fire_ignition_detected:
+                    # Reset fire ignition detection
+                    fire_ignition_detected = False
+                    fire_box_area_increasing_count = 0
+                    current_fire_box_area = 0
+                    fire_box_area_increasing_undetect_count = 0
+
                     current_video_frame_count = 0
                     vid_path[i] = None
-                    vid_writer[i].release()         
+                    vid_writer[i].release()
                     shutil.copy(save_path + '.mp4', save_stream_detection_video)
                     print("===============================")
                     print("===============================")
                     print("SENDING VIDEO!!!")
                     print("===============================")
-                    print("===============================")                    
-
-            
-            # Save results (image with detections)
-            # if save_img:
-            #     if dataset.mode == 'image':
-            #         cv2.imwrite(save_path, im0)
-            #     else:  # 'video' or 'stream'
-            #         if vid_path[i] != save_path:  # new video
-            #             vid_path[i] = save_path
-            #             if isinstance(vid_writer[i], cv2.VideoWriter):
-            #                 vid_writer[i].release()  # release previous video writer
-            #             if vid_cap:  # video
-            #                 fps = vid_cap.get(cv2.CAP_PROP_FPS)
-            #                 w = int(vid_cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-            #                 h = int(vid_cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-            #             else:  # stream
-            #                 fps, w, h = 30, im0.shape[1], im0.shape[0]
-            #                 save_path += '.mp4'
-            #             vid_writer[i] = cv2.VideoWriter(save_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (w, h))
-            #         vid_writer[i].write(im0)
+                    print("===============================")
 
     if save_txt or save_img:
         s = f"\n{len(list(save_dir.glob('labels/*.txt')))} labels saved to {save_dir / 'labels'}" if save_txt else ''
@@ -299,9 +323,11 @@ def run(weights='yolov5s.pt',  # model.pt path(s)
 
 
 def parse_opt():
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
     parser = argparse.ArgumentParser()
-    parser.add_argument('--weights', nargs='+', type=str, default='yolov5s.pt', help='model.pt path(s)')
-    parser.add_argument('--source', type=str, default='data/images', help='file/dir/URL/glob, 0 for webcam')
+    parser.add_argument('--weights', nargs='+', type=str, default=os.path.join(BASE_DIR, 'yolov5s.pt'), help='model.pt path(s)')
+    parser.add_argument('--source', type=str, default=os.path.join(BASE_DIR, 'data/images'), help='file/dir/URL/glob, 0 for webcam')
     parser.add_argument('--imgsz', '--img', '--img-size', nargs='+', type=int, default=[640], help='inference size h,w')
     parser.add_argument('--conf-thres', type=float, default=0.25, help='confidence threshold')
     parser.add_argument('--iou-thres', type=float, default=0.45, help='NMS IoU threshold')
@@ -324,8 +350,8 @@ def parse_opt():
     parser.add_argument('--hide-labels', default=False, action='store_true', help='hide labels')
     parser.add_argument('--hide-conf', default=False, action='store_true', help='hide confidences')
     parser.add_argument('--half', action='store_true', help='use FP16 half-precision inference')
-    parser.add_argument('--save-stream-detection-image', default='stream/detect', help='Directory to save the stream snapshot for each frame')
-    parser.add_argument('--save-stream-detection-video', default='stream/detect', help='Directory to save the video containing the detections across the specified time')
+    parser.add_argument('--save-stream-detection-image', default=os.path.join(BASE_DIR, 'stream/detect'), help='Directory to save the stream snapshot for each frame')
+    parser.add_argument('--save-stream-detection-video', default=os.path.join(BASE_DIR, 'stream/detect'), help='Directory to save the video containing the detections across the specified time')
     opt = parser.parse_args()
     opt.imgsz *= 2 if len(opt.imgsz) == 1 else 1  # expand
     return opt
