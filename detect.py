@@ -190,6 +190,10 @@ def run(weights='yolov5s.pt',  # model.pt path(s)
         if classify:
             pred = apply_classifier(pred, modelc, img, im0s)
 
+        # Copy pred to cpu
+        if torch.cuda.is_available():
+            pred = [x.detach().cpu() for x in pred]
+
         # Process predictions
         for i, det in enumerate(pred):  # detections per image
             if webcam:  # batch_size >= 1
