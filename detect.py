@@ -390,6 +390,7 @@ def parse_opt():
     parser.add_argument('--half', action='store_true', help='use FP16 half-precision inference')
     parser.add_argument('--save-stream-detection-image', default=os.path.join(BASE_DIR, 'stream/detect'), help='Directory to save the stream snapshot for each frame')
     parser.add_argument('--save-stream-detection-video', default=os.path.join(BASE_DIR, 'stream/detect'), help='Directory to save the video containing the detections across the specified time')
+    parser.add_argument('--verbose', action='store_true', help='display intermediate logs')
     opt = parser.parse_args()
     opt.imgsz *= 2 if len(opt.imgsz) == 1 else 1  # expand
     return opt
