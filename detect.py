@@ -26,7 +26,7 @@ from timm.models.layers import set_layer_config
 torch.backends.cudnn.benchmark = True
 
 FILE = Path(__file__).absolute()
-sys.path.append(FILE.parents[0].as_posix())  # add yolov5/ to path
+sys.path.append(FILE.parents[0].as_posix())
 
 from models.experimental import attempt_load
 from utils.datasets import LoadStreams, LoadImages
@@ -36,10 +36,10 @@ from utils.plots import colors, plot_one_box
 from utils.torch_utils import select_device
 
 
-UNDETECTED_COUNT_THRESHOLD = 3
-MAX_DETECTION_FRAME_COUNT = 4
-MAX_FIRE_BOX_AREA_INCREASE_COUNT = 3
-FIRE_BOX_AREA_UNDETECTED_THRESHOLD = 1
+UNDETECTED_COUNT_THRESHOLD = 30
+MAX_DETECTION_FRAME_COUNT = 120
+MAX_FIRE_BOX_AREA_INCREASE_COUNT = 30
+FIRE_BOX_AREA_UNDETECTED_THRESHOLD = 121
 
 
 def load_sy4(weights, device, half):
@@ -216,6 +216,9 @@ def run(weight_sy4='scaled_yolov4.pt',  # model.pt path(s)
     fire_box_area_increasing_undetect_count = 0
     fire_ignition_detected = False
 
+    if not verbose:
+        print('\nDetecting Fire and Smoke...')
+
     for path, img, im0s, vid_cap in dataset:
         img = torch.from_numpy(img).to(device)
         img = img.half() if half else img.float()  # uint8 to fp16/32
@@ -300,7 +303,7 @@ def run(weight_sy4='scaled_yolov4.pt',  # model.pt path(s)
             if fire_smoke_detected:
                 cv2.imwrite(f'{save_stream_detection_image}/fire-detection.jpg', im0)
 
-            if fire_box_area_increasing_count >= MAX_FIRE_BOX_AREA_INCREASE_COUNT:
+            if fire_box_area_increasing_count >= MAX_FIRE_BOX_AREA_INCREASE_COUNT and not fire_ignition_detected:
                 print('============================================================')
                 print('Fire ignition detected!')
                 print('============================================================')
@@ -350,10 +353,9 @@ def run(weight_sy4='scaled_yolov4.pt',  # model.pt path(s)
                     vid_writer[i].release()
                     shutil.copy(save_path + '.mp4', save_stream_detection_video)
                     print("===============================")
-                    print("===============================")
                     print("SENDING VIDEO!!!")
                     print("===============================")
-                    print("===============================")
+                    print('\nDetecting Fire and Smoke...')
 
     if save_txt or save_img:
         s = f"\n{len(list(save_dir.glob('labels/*.txt')))} labels saved to {save_dir / 'labels'}" if save_txt else ''
