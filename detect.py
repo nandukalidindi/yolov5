@@ -39,7 +39,7 @@ from utils.torch_utils import select_device
 UNDETECTED_COUNT_THRESHOLD = 30
 MAX_DETECTION_FRAME_COUNT = 120
 MAX_FIRE_BOX_AREA_INCREASE_COUNT = 30
-FIRE_BOX_AREA_UNDETECTED_THRESHOLD = 121
+FIRE_BOX_AREA_UNDETECTED_THRESHOLD = 8
 
 
 def load_sy4(weights, device, half):
@@ -266,9 +266,9 @@ def run(weight_sy4='scaled_yolov4.pt',  # model.pt path(s)
                 if not fire_ignition_detected:
                     fire_bbox_area_list = []
                     for *xyxy, _, cls in det:
-                        if names[int(cls)] == 'fire':
+                        if names[int(cls)] == 'fire' or names[int(cls)] == 'smoke':
                             fire_bbox_area_list.append((xyxy[2] - xyxy[0]) * (xyxy[3] - xyxy[1]))
-                    fire_box_area = np.mean(fire_bbox_area_list)
+                    fire_box_area = np.sum(fire_bbox_area_list)
                     if fire_box_area >= current_fire_box_area:
                         fire_box_area_increasing_count += 1
                         current_fire_box_area = fire_box_area
